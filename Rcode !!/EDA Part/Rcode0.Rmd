@@ -1,0 +1,359 @@
+---
+title: "EDA"
+author: "Ruxue Sun"
+date: "2024-07-20"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# EDA
+
+```{r}
+#1. Read data
+# Load necessary libraries
+library(DESeq2)
+library(readr)
+library(tidyverse)
+
+# Read data file
+counts_all <- read_csv('counts_all.csv')
+samplesheet <- read_csv('Gat201_samplesheet.csv')
+
+# Convert tibble to data frame
+counts_all <- as.data.frame(counts_all)
+samplesheet <- as.data.frame(samplesheet)
+
+# Set the line name
+rownames(counts_all) <- counts_all$Geneid
+# Remove rows containing 0. If a pedestrian data contains 0, it is considered an abnormal value and is directly removed.
+filtered_counts_all<-counts_all[rowSums(counts_all ==0) ==0,]
+counts_all_without_names <- counts_all[,c(-1,-2,-3,-4,-5,-6)]
+
+# Sample table settings Row name
+rownames(samplesheet) <- samplesheet$Title
+samplesheet_without_ids <- samplesheet[,c(-1,-2,-3,-6,-8)]
+# Convert the necessary columns to factor types
+samplesheet_without_ids$GAT201 <- as.factor(samplesheet_without_ids$GAT201)
+samplesheet_without_ids$Condition <- as.factor(samplesheet_without_ids$Condition)
+samplesheet_without_ids$BioRep <- as.factor(samplesheet_without_ids$BioRep)
+#samplesheet_without_ids$Strain <- as.factor(samplesheet_without_ids$Strain)
+#samplesheet_without_ids$Time <- as.factor(samplesheet_without_ids$Time)
+
+
+#3.exploratory data analysis
+
+# Create DESeq2 object
+dds <- DESeqDataSetFromMatrix(countData = counts_all_without_names,
+                              colData = samplesheet_without_ids,
+                              design = ~ GAT201 + Condition +  BioRep)
+
+# Filter out low-expression genes
+dds <- dds[rowSums(counts(dds)) > 10,]
+
+# Run DESeq2 for standardisation and differential expression analysis
+dds <- DESeq(dds)
+
+# Perform variance stabilisation transformation
+vsd <- vst(dds, blind = FALSE)
+
+# Extract the duplicated sample twice
+replicate1_samples <- rownames(samplesheet_without_ids[samplesheet_without_ids$BioRep == 1, ])
+replicate2_samples <- rownames(samplesheet_without_ids[samplesheet_without_ids$BioRep == 2, ])
+replicate1_data <- assay(vsd)[, replicate1_samples]
+replicate2_data <- assay(vsd)[, replicate2_samples]
+
+```
+
+```{r}
+#Level 1: Calculate the correlation coefficient between the two inter-gene replications
+cor_matrix <- cor(assay(vsd)[, replicate1_samples], assay(vsd)[, replicate2_samples])
+
+# Extract diagonal elements
+diag_cor <- diag(cor_matrix)
+
+# Average correlation coefficient
+mean_cor <- mean(diag_cor)
+print(mean_cor)
+
+# Draw a heat map
+library(pheatmap)
+pheatmap(cor_matrix, clustering_distance_rows = "correlation", clustering_distance_cols = "correlation", main = "Inter-gene Correlation Matrix")
+```
+
+```{r}
+#Level 2: Calculate the correlation between the two intra-gene replications
+#That is, calculate the correlation coefficient between each gene
+# Calculate the correlation coefficient of each gene
+calculate_gene_correlation <- function(replicate1_data, replicate2_data, gene_names) {
+  gene_correlations <- numeric(length(gene_names))
+  
+  for (i in 1:length(gene_names)) {
+    gene <- gene_names[i]
+    data1 <- replicate1_data[gene, ]
+    data2 <- replicate2_data[gene, ]
+    
+    gene_correlations[i] <- cor(data1, data2)
+  }
+  
+  names(gene_correlations) <- gene_names
+  return(gene_correlations)
+}
+
+gene_correlations <- calculate_gene_correlation(replicate1_data, replicate2_data, rownames(replicate1_data))
+# Take the value of the correlation coefficient.
+gene_correlations01 <- as.data.frame(gene_correlations)
+# Draw a box plot
+boxplot(gene_correlations, main = "Intra-gene Correlation Coefficients", ylab = "Correlation Coefficient")
+
+# Identify low-correlation genes
+threshold <- quantile(gene_correlations, 0.05)
+low_correlation_genes <- names(gene_correlations[gene_correlations < threshold])
+low_correlation_genes01 <- as.data.frame(low_correlation_genes)
+
+# Extract low-correlation genes and their corresponding correlation coefficients
+low_correlation_genes_df <- data.frame(
+  Gene = names(gene_correlations[low_correlation_genes]),
+  Correlation = gene_correlations[low_correlation_genes]
+)
+
+# View data frame contents
+print(low_correlation_genes_df)
+# Export as CSV file
+write.csv(low_correlation_genes_df, "low_correlation_genes.csv", row.names = FALSE)
+
+
+print("The low-correlation genes and their correlation coefficients have been derived as low_correlation_genes.csv")
+
+
+threshold02 <- 0.75
+low_correlation_genes02 <- names(gene_correlations[gene_correlations < threshold02])
+
+# Extract low-correlation genes and their corresponding correlation coefficients
+low_correlation_genes_df02 <- data.frame(
+  Gene = names(gene_correlations[low_correlation_genes02]),
+  Correlation = gene_correlations[low_correlation_genes02]
+)
+
+# Export as CSV file
+write.csv(low_correlation_genes_df02, "low_correlation_genes02.csv", row.names = FALSE)
+```
+
+```{r}
+#Explore whether there is a systematic bias
+#The number of genes with low correlation accounts for about 25% of the total, which is too much
+#Extract the expression data of low-correlated genes in two replications
+low_correlation_replicate1_data <- replicate1_data[low_correlation_genes02, ]
+low_correlation_replicate2_data <- replicate2_data[low_correlation_genes02, ]
+
+# Calculate expression differences
+expression_diff <- rowMeans(low_correlation_replicate1_data) - rowMeans(low_correlation_replicate2_data)
+expression_diff_df <- data.frame(
+  Gene = low_correlation_genes02,
+  ExpressionDiff = expression_diff
+)
+
+# View the first few lines of data
+head(expression_diff_df)
+# Create long format data frame
+expression_diff_long <- data.frame(
+  Gene = rep(low_correlation_genes02, 2),
+  Expression = c(rowMeans(low_correlation_replicate1_data), rowMeans(low_correlation_replicate2_data)),
+  Replicate = rep(c("Replicate1", "Replicate2"), each = length(low_correlation_genes02))
+)
+
+# Draw a box plot
+ggplot(expression_diff_long, aes(x = Replicate, y = Expression, fill = Replicate)) +
+  geom_boxplot() +
+  labs(title = "Expression Differences of Low Correlation Genes",
+       x = "Replicate",
+       y = "Expression Level") +
+  theme_minimal()
+
+# Draw a difference histogram
+ggplot(expression_diff_df, aes(x = ExpressionDiff)) +
+  geom_histogram(binwidth = 0.1, fill = "blue", alpha = 0.7) +
+  labs(title = "Histogram of Expression Differences",
+       x = "Expression Difference",
+       y = "Frequency") +
+  theme_minimal()
+
+```
+
+```{r}
+# Extract the standardised data
+normalized_counts <- assay(vsd)
+# PCA analysis
+pca_res <- prcomp(t(normalized_counts))
+
+# Extract the first two principal components
+pca_data <- as.data.frame(pca_res$x)
+pca_data$Condition <- rownames(pca_data)
+
+# Visualisation of PCA results
+library(ggplot2)
+ggplot(pca_data, aes(x = PC1, y = PC2, color = Condition)) +
+  geom_point(size = 3) +
+  labs(title = "PCA of Gene Expression Data",
+       x = "Principal Component 1",
+       y = "Principal Component 2") +
+  theme_minimal()
+
+# Write out the different groups
+# Set k to 4 because there appear to be four clusters in the graph
+set.seed(123)  # Set a random seed to ensure reproducible results
+k <- 4
+kmeans_res <- kmeans(pca_data[, 1:2], centers = k)
+
+# Add the clustering result to the data frame
+pca_data$Cluster <- as.factor(kmeans_res$cluster)
+
+# Visualise PCA results and label clusters
+ggplot(pca_data, aes(x = PC1, y = PC2, color = Cluster, label = Condition)) +
+  geom_point(size = 3) +
+  geom_text(vjust = -1, size = 3) +
+  labs(title = "PCA of Gene Expression Data with K-means Clustering",
+       x = "Principal Component 1",
+       y = "Principal Component 2") +
+  theme_minimal()
+
+
+# List the condition names for each cluster
+cluster_conditions <- split(pca_data$Condition, pca_data$Cluster)
+
+# Print the condition name for each cluster
+for (i in 1:k) {
+  cat("Cluster", i, "conditions:\n")
+  print(cluster_conditions[[i]])
+  cat("\n")
+}
+
+```
+
+```{r}
+
+#1. Analyse the behaviour of individual genes
+# Define a function to extract and merge gene expression data
+get_gene_data <- function(gene_name, dds) {
+  # Extract gene expression data
+  gene_expression <- counts(dds)[gene_name, ]
+  
+  # Combine expression data and conditional information
+  gene_data <- data.frame(
+    Expression = gene_expression,
+    Condition = colnames(counts(dds))
+  )
+  
+  return(gene_data)
+}
+
+gene_data <- get_gene_data("CNAG_00016",dds)
+
+# Define a function to draw a histogram
+plot_gene_expression <- function(gene_name, dds) {
+  # Obtain genetic data
+  gene_data <- get_gene_data(gene_name, dds)
+  # Make sure that the Condition column is of the factor type and sorted in the original data order.
+  gene_data$Condition <- factor(gene_data$Condition, levels = unique(gene_data$Condition))
+  
+  # Extract the second-to-last digit of the Condition
+  gene_data$Time <- as.numeric(sub(".*_(\\d+)_.*", "\\1", gene_data$Condition))
+  
+  color_palette <- c("0" = "red", "30" = "yellow", "120" = "green", "240" = "blue")
+  
+  # Draw a bar chart and optimise it
+  p <- ggplot(gene_data, aes(x = Condition, y = Expression, fill = as.factor(Time))) +
+    geom_bar(stat = "identity", alpha = 0.7) +
+    geom_text(aes(label = round(Expression, 2)), vjust = -0.5, size = 3) +
+    scale_fill_manual(values = color_palette, name = "Time") +
+    labs(title = paste("Expression of", gene_name, "across Conditions"),
+         x = "Condition",
+         y = "Expression Level") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+          legend.position = "top")
+  
+  return(p)
+}
+plot_gene_expression("CNAG_00016",dds)
+```
+
+```{r}
+##################
+#Explore the expression behaviour of different genes under the same conditions
+#First, remove the gene data with a correlation coefficient of less than 0.75 between the first and second replication data,
+#because this part is flawed in the experiment and is not conducive to exploration
+# Remove low correlation genes
+filtered_counts <- counts(dds)[!rownames(counts(dds)) %in% low_correlation_genes02, ]
+filtered_dds <- dds[!rownames(dds) %in% low_correlation_genes02, ]
+
+# The original data contains data for 6795 genes. Why are there only 6756 genes after VSD?
+# Possible reasons
+# Filtering of lowly expressed genes:
+# 
+# When using DESeq2 for analysis, lowly expressed genes are often filtered out. For example, the code dds <- dds[rowSums(counts(dds)) > 10,] is used to filter out genes that have a total count of less than 10 in all samples. This may result in a reduction in the number of genes.
+# Missing data handling:
+# 
+# During some preprocessing steps, genes may be filtered out if they are not detected in all samples (i.e. have a count of zero).
+# Variance stabilisation (VSD):
+# 
+# During variance stabilisation, DESeq2 may further filter out some genes, especially those that are not detected in most samples or have very low expression levels.
+
+# Performing variance stabilisation
+filtered_vsd <- vst(filtered_dds, blind = FALSE)
+# Performing a Variance Stabilising Transformation (VST) can help us better deal with some of the characteristics of RNA-seq data, especially during the data exploration and visualisation stages. Here are the reasons for performing a VST and what it does:
+# 
+# Reasons and effects
+# Standardising data: RNA-seq data often has a high degree of variability and a wide dynamic range. VST can standardise this data, making gene expression values more comparable between different samples.
+# 
+# Reduce noise: In RNA-seq data, low-expression genes often have high noise levels. VST can reduce this noise, making gene expression levels more stable and reliable.
+# 
+# Suitable for downstream analysis: VST data is more suitable for downstream statistical analysis and visualization, such as principal component analysis (PCA), cluster analysis, etc.
+colnames(assay(filtered_vsd))
+#View column names to prevent errors
+test01 <- as.data.frame(assay(filtered_vsd)[,c("A_R_30_1","A_R_120_1","A_R_240_1")])
+Gene <- rownames(test01)
+test01 <- cbind(Gene,test01)
+
+
+library(ggplot2)
+library(readr)
+library(tidyr)
+library(dplyr)
+
+# # Convert data to long format
+test01_long <- test01 %>%
+  pivot_longer(cols = -Gene, names_to = c("Condition1", "Condition2", "Time", "Replicate"),
+               names_pattern = "(.*)_([^_]+)_(\\d+)_(\\d+)$", values_to = "Expression") %>%
+  unite("Condition", Condition1, Condition2, sep = "_")
+
+# Make sure that Time is a numeric type
+test01_long$Time <- factor(test01_long$Time, levels = c(30, 120, 240))
+# Plot the chart
+#plot_batch(test01_long)
+# The data volume is too large to be plotted, and R is stuck
+
+
+# For debugging
+# # View the converted data structure
+# str(test01_long)
+# head(test01_long)
+
+# Function to plot a line chart
+plot_expression_data <- function(data) {
+  p <- ggplot(data, aes(x = Time, y = Expression, color = Gene, group = Gene)) +
+    geom_line() +
+    geom_point() +
+    labs(title = "Expression of Genes across Time Points(A_R)",
+         x = "Time",
+         y = "Expression Level") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+  
+  return(p)
+}
+
+plot_expression_data(test01_long[1:36,])
+plot_expression_data(test01_long[37:72,])
+
+```

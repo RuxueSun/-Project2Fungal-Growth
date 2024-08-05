@@ -1,0 +1,354 @@
+---
+title: "Rcode1"
+author: "Ruxue Sun"
+date: "2024-07-23"
+output: html_document
+---
+
+# Q1.GLM
+
+```{r}
+#1. Read data
+# Load necessary libraries
+library(DESeq2)
+library(readr)
+library(tidyverse)
+library(MASS)
+library(ggplot2)
+library(car)
+
+# Read data file
+counts_all <- read_csv('counts_all.csv')
+samplesheet <- read_csv('Gat201_samplesheet.csv')
+
+
+counts_all <- as.data.frame(counts_all)
+samplesheet <- as.data.frame(samplesheet)
+
+
+rownames(counts_all) <- counts_all$Geneid
+# Remove rows containing 0. If a pedestrian data contains 0, it is considered an abnormal value and is directly removed.filtered_counts_all<-counts_all[rowSums(counts_all ==0) ==0,]
+counts_all_without_names <- counts_all[,c(-1,-2,-3,-4,-5,-6)]
+# Sample table settings Row name
+rownames(samplesheet) <- samplesheet$Title
+samplesheet_without_ids <- samplesheet[,c(-1,-2,-3,-6,-8)]
+
+# Convert the necessary columns to factor types
+samplesheet_without_ids$GAT201 <- as.factor(samplesheet_without_ids$GAT201)
+samplesheet_without_ids$Condition <- as.factor(samplesheet_without_ids$Condition)
+samplesheet_without_ids$BioRep <- as.factor(samplesheet_without_ids$BioRep)
+
+# Create DESeq2 object
+dds <- DESeqDataSetFromMatrix(countData = counts_all_without_names,
+                              colData = samplesheet_without_ids,
+                              design = ~ GAT201 + Condition + BioRep)
+
+
+# Filter out low-expression genes
+dds <- dds[rowSums(counts(dds)) > 10,]
+
+# Run DESeq2 to normalise
+dds <- DESeq(dds)
+vsd <- vst(dds, blind = FALSE)
+
+# Extract the standardised expression data
+expression_data_standardized <- assay(vsd)
+```
+
+```{r}
+#Because the results of the previous PCA clustering of the data showed that the expression data at different times was significantly different,
+#and the rest of the conditions did not achieve significant differences in all genes, it is more appropriate to use time as the independent variable
+#Therefore, time is used as an independent variable, and the rest of the conditions are fixed to explore the modelling of gene expression data
+#The data at each time point needs to be filtered out.
+
+# Extract data from time point 30
+time30_samples <- colnames(counts_all_without_names)[grepl("_30_", colnames(counts_all_without_names))]
+initial_samples <- colnames(counts_all_without_names)[grepl("_Y_0_", colnames(counts_all_without_names))]
+
+# Extract data from time point 120
+time120_samples <- colnames(counts_all_without_names)[grepl("_120_", colnames(counts_all_without_names))]
+
+# Extract data from time point 240
+time240_samples <- colnames(counts_all_without_names)[grepl("_240_", colnames(counts_all_without_names))]
+
+expression_data_standardized_0 <- expression_data_standardized[,initial_samples]
+expression_data_standardized_30 <- expression_data_standardized[,time30_samples]
+expression_data_standardized_120 <- expression_data_standardized[,time120_samples]
+expression_data_standardized_240 <- expression_data_standardized[,time240_samples]
+
+expression_data_standardized_0_A <- expression_data_standardized_0[,1:2]
+expression_data_standardized_0_a <- expression_data_standardized_0[,3:4]
+expression_data_standardized_0_B <- expression_data_standardized_0[,5:6]
+expression_data_standardized_0_M <- expression_data_standardized_0[,7:8]
+
+expression_data_standardized_30_A_R <- expression_data_standardized_30[,1:2]
+expression_data_standardized_30_A_RS <- expression_data_standardized_30[,3:4]
+expression_data_standardized_30_a_R <- expression_data_standardized_30[,5:6]
+expression_data_standardized_30_a_RS <- expression_data_standardized_30[,7:8]
+expression_data_standardized_30_B_R <- expression_data_standardized_30[,9:10]
+expression_data_standardized_30_B_RS <- expression_data_standardized_30[,11:12]
+expression_data_standardized_30_M_R <- expression_data_standardized_30[,13:14]
+expression_data_standardized_30_M_RS <- expression_data_standardized_30[,15:16]
+
+expression_data_standardized_120_A_R <- expression_data_standardized_120[,1:2]
+expression_data_standardized_120_A_RS <- expression_data_standardized_120[,3:4]
+expression_data_standardized_120_a_R <- expression_data_standardized_120[,5:6]
+expression_data_standardized_120_a_RS <- expression_data_standardized_120[,7:8]
+expression_data_standardized_120_B_R <- expression_data_standardized_120[,9:10]
+expression_data_standardized_120_B_RS <- expression_data_standardized_120[,11:12]
+expression_data_standardized_120_M_R <- expression_data_standardized_120[,13:14]
+expression_data_standardized_120_M_RS <- expression_data_standardized_120[,15:16]
+
+expression_data_standardized_240_A_R <- expression_data_standardized_240[,1:2]
+expression_data_standardized_240_A_RS <- expression_data_standardized_240[,3:4]
+expression_data_standardized_240_a_R <- expression_data_standardized_240[,5:6]
+expression_data_standardized_240_a_RS <- expression_data_standardized_240[,7:8]
+expression_data_standardized_240_B_R <- expression_data_standardized_240[,9:10]
+expression_data_standardized_240_B_RS <- expression_data_standardized_240[,11:12]
+expression_data_standardized_240_M_R <- expression_data_standardized_240[,13:14]
+expression_data_standardized_240_M_RS <- expression_data_standardized_240[,15:16]
+```
+
+```{r}
+# Prepare data frame, combine initial sample values and expression data under 30-minute conditions
+data_for_model <- data.frame(
+  InitialSample = as.vector(expression_data_standardized_0_A),
+  Expression = as.vector(expression_data_standardized_30_A_R)
+)
+
+# Fitting a GLM model
+fit_with_initial_30_A_R <- glm.nb(Expression ~ InitialSample, data = data_for_model)
+
+# View model summary
+summary(fit_with_initial_30_A_R)
+```
+
+```{r}
+#Since the modelling process and the results of the modelling both show that for the data after VST conversion, regression using a negative binomial distribution is not appropriate,
+#a Gaussian distribution is used# to fit the GLM model, using a Gaussian distribution
+fit_with_initial_30_A_R_gaussian <- glm(Expression ~ InitialSample, data = data_for_model, family = gaussian())
+
+# View model summary
+summary(fit_with_initial_30_A_R_gaussian)
+
+
+
+
+#1
+ggplot(fit_with_initial_30_A_R_gaussian, aes(x = InitialSample, y = Expression)) +
+  geom_point() +
+  geom_smooth(method = "glm", method.args = list(family = "gaussian"), se = FALSE, color = "blue") +
+  labs(title = "GLM Fit for InitialSample vs Expression at 30 minutes",
+       x = "Initial Sample",
+       y = "Expression") +
+  theme_minimal()
+
+# 2. Residual plot
+ggplot(fit_with_initial_30_A_R_gaussian, aes(x = fit_with_initial_30_A_R_gaussian$fitted.values, y = residuals(fit_with_initial_30_A_R_gaussian))) +
+  geom_point() +
+  labs(title = "Residuals vs Fitted",
+       x = "Fitted Values",
+       y = "Residuals") +
+  theme_minimal()
+
+
+# 3. Cook's Distance plot
+cooksd <- cooks.distance(fit_with_initial_30_A_R_gaussian)
+ggplot(data_for_model, aes(x = seq_along(cooksd), y = cooksd)) +
+  geom_bar(stat="identity") +
+  labs(title = "Cook's Distance",
+       x = "Observation",
+       y = "Cook's Distance") +
+  theme_minimal()
+```
+
+```{r}
+get_glm_gaussian_models <- function(initial_variables,dependent_variables){
+  data_for_model <- data.frame(
+    InitialSample = as.vector(initial_variables),
+    Expression = as.vector(dependent_variables)
+  )
+  result <- glm(Expression ~ InitialSample, data = data_for_model, family = gaussian())
+  return(result)
+}
+```
+
+```{r}
+####################################################
+#Time is 30
+fit_with_initial_30_A_R <- get_glm_gaussian_models(expression_data_standardized_0_A,expression_data_standardized_30_A_R)
+summary(fit_with_initial_30_A_R)
+
+fit_with_initial_30_A_RS <- get_glm_gaussian_models(expression_data_standardized_0_A, expression_data_standardized_30_A_RS)
+summary(fit_with_initial_30_A_RS)
+
+fit_with_initial_30_a_R <- get_glm_gaussian_models(expression_data_standardized_0_a,expression_data_standardized_30_a_R)
+summary(fit_with_initial_30_a_R)
+
+fit_with_initial_30_a_RS <- get_glm_gaussian_models(expression_data_standardized_0_a,expression_data_standardized_30_a_RS)
+summary(fit_with_initial_30_a_RS)
+
+fit_with_initial_30_B_R <- get_glm_gaussian_models(expression_data_standardized_0_B,expression_data_standardized_30_B_R)
+summary(fit_with_initial_30_B_R)
+
+fit_with_initial_30_B_RS <- get_glm_gaussian_models(expression_data_standardized_0_B,expression_data_standardized_30_B_RS)
+summary(fit_with_initial_30_B_RS)
+
+fit_with_initial_30_M_R <- get_glm_gaussian_models(expression_data_standardized_0_M,expression_data_standardized_30_M_R)
+summary(fit_with_initial_30_M_R)
+
+fit_with_initial_30_M_RS <- get_glm_gaussian_models(expression_data_standardized_0_M,expression_data_standardized_30_M_RS)
+summary(fit_with_initial_30_M_RS)
+
+
+#B_R_30
+# 1. 
+ggplot(fit_with_initial_30_M_RS, aes(x = InitialSample, y = Expression)) +
+  geom_point() +
+  geom_smooth(method = "glm", method.args = list(family = "gaussian"), se = FALSE, color = "blue") +
+  labs(title = "GLM Fit for InitialSample vs Expression at M_RS_30",
+       x = "Initial Sample",
+       y = "Expression") +
+  theme_minimal()
+
+# 2.  Residual plot
+ggplot(fit_with_initial_30_M_RS, aes(x = fit_with_initial_30_M_RS$fitted.values, y = residuals(fit_with_initial_30_M_RS))) +
+  geom_point() +
+  labs(title = "Residuals vs Fitted",
+       x = "Fitted Values",
+       y = "Residuals") +
+  theme_minimal()
+
+
+# 4. Cook's Distance plot
+cooksd <- cooks.distance(fit_with_initial_30_M_RS)
+ggplot(data_for_model, aes(x = seq_along(cooksd), y = cooksd)) +
+  geom_bar(stat="identity") +
+  labs(title = "Cook's Distance",
+       x = "Observation",
+       y = "Cook's Distance") +
+   coord_cartesian(ylim = c(0, 0.002))
+  theme_minimal()
+
+
+
+```
+
+```{r}
+##################################
+#Time is 30
+fit_with_initial_120_A_R <- get_glm_gaussian_models(expression_data_standardized_0_A,expression_data_standardized_120_A_R)
+summary(fit_with_initial_120_A_R)
+
+fit_with_initial_120_A_RS <- get_glm_gaussian_models(expression_data_standardized_0_A, expression_data_standardized_120_A_RS)
+summary(fit_with_initial_120_A_RS)
+
+fit_with_initial_120_a_R <- get_glm_gaussian_models(expression_data_standardized_0_a,expression_data_standardized_120_a_R)
+summary(fit_with_initial_120_a_R)
+
+fit_with_initial_120_a_RS <- get_glm_gaussian_models(expression_data_standardized_0_a,expression_data_standardized_120_a_RS)
+summary(fit_with_initial_120_a_RS)
+
+fit_with_initial_120_B_R <- get_glm_gaussian_models(expression_data_standardized_0_B,expression_data_standardized_120_B_R)
+summary(fit_with_initial_120_B_R)
+
+fit_with_initial_120_B_RS <- get_glm_gaussian_models(expression_data_standardized_0_B,expression_data_standardized_120_B_RS)
+summary(fit_with_initial_120_B_RS)
+
+fit_with_initial_120_M_R <- get_glm_gaussian_models(expression_data_standardized_0_M,expression_data_standardized_120_M_R)
+summary(fit_with_initial_120_M_R)
+
+fit_with_initial_120_M_RS <- get_glm_gaussian_models(expression_data_standardized_0_M,expression_data_standardized_120_M_RS)
+summary(fit_with_initial_120_M_RS)
+
+#B_R_120
+# 1.
+ggplot(fit_with_initial_120_M_RS, aes(x = InitialSample, y = Expression)) +
+  geom_point() +
+  geom_smooth(method = "glm", method.args = list(family = "gaussian"), se = FALSE, color = "blue") +
+  labs(title = "GLM Fit for InitialSample vs Expression at M_RS_120",
+       x = "Initial Sample",
+       y = "Expression") +
+  theme_minimal()
+
+# 2. Residual plot
+ggplot(fit_with_initial_120_A_RS, aes(x = fit_with_initial_120_A_RS$fitted.values, y = residuals(fit_with_initial_120_A_RS))) +
+  geom_point() +
+  labs(title = "Residuals vs Fitted",
+       x = "Fitted Values",
+       y = "Residuals") +
+  theme_minimal()
+
+
+# 4. Cook's Distance plot
+cooksd <- cooks.distance(fit_with_initial_120_A_RS)
+ggplot(data_for_model, aes(x = seq_along(cooksd), y = cooksd)) +
+  geom_bar(stat="identity") +
+  labs(title = "Cook's Distance",
+       x = "Observation",
+       y = "Cook's Distance") +
+  theme_minimal()
+```
+
+```{r}
+##################################
+#时间为240的
+
+
+fit_with_initial_240_A_R <- get_glm_gaussian_models(expression_data_standardized_0_A,expression_data_standardized_240_A_R)
+summary(fit_with_initial_240_A_R)
+
+fit_with_initial_240_A_RS <- get_glm_gaussian_models(expression_data_standardized_0_A, expression_data_standardized_240_A_RS)
+summary(fit_with_initial_240_A_RS)
+
+fit_with_initial_240_a_R <- get_glm_gaussian_models(expression_data_standardized_0_a,expression_data_standardized_240_a_R)
+summary(fit_with_initial_240_a_R)
+
+fit_with_initial_240_a_RS <- get_glm_gaussian_models(expression_data_standardized_0_a,expression_data_standardized_240_a_RS)
+summary(fit_with_initial_240_a_RS)
+
+fit_with_initial_240_B_R <- get_glm_gaussian_models(expression_data_standardized_0_B,expression_data_standardized_240_B_R)
+summary(fit_with_initial_240_B_R)
+
+fit_with_initial_240_B_RS <- get_glm_gaussian_models(expression_data_standardized_0_B,expression_data_standardized_240_B_RS)
+summary(fit_with_initial_240_B_RS)
+
+fit_with_initial_240_M_R <- get_glm_gaussian_models(expression_data_standardized_0_M,expression_data_standardized_240_M_R)
+summary(fit_with_initial_240_M_R)
+
+fit_with_initial_240_M_RS <- get_glm_gaussian_models(expression_data_standardized_0_M,expression_data_standardized_240_M_RS)
+summary(fit_with_initial_240_M_RS)
+
+
+
+#B_R_240
+# 1.
+ggplot(fit_with_initial_240_a_R, aes(x = InitialSample, y = Expression)) +
+  geom_point() +
+  geom_smooth(method = "glm", method.args = list(family = "gaussian"), se = FALSE, color = "blue") +
+  labs(title = "GLM Fit for InitialSample vs Expression at a_R_240",
+       x = "Initial Sample",
+       y = "Expression") +
+  theme_minimal()
+
+# 2. Residual plot
+ggplot(fit_with_initial_240_a_R, aes(x = fit_with_initial_240_a_R$fitted.values, y = residuals(fit_with_initial_240_a_R))) +
+  geom_point() +
+  labs(title = "Residuals vs Fitted",
+       x = "Fitted Values",
+       y = "Residuals") +
+  theme_minimal()
+
+
+# 3. Cook's Distance plot
+cooksd <- cooks.distance(fit_with_initial_240_a_R)
+ggplot(data_for_model, aes(x = seq_along(cooksd), y = cooksd)) +
+  geom_bar(stat="identity") +
+  labs(title = "Cook's Distance",
+       x = "Observation",
+       y = "Cook's Distance") +
+  theme_minimal()
+
+
+###################
+```

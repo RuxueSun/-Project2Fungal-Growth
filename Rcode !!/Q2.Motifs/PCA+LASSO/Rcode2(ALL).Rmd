@@ -1,0 +1,734 @@
+---
+title: "RcodeQ2"
+author: "Ruxue Sun"
+date: "2024-07-29"
+output: html_document
+---
+
+# 2-mer
+
+```{r}
+library(readr)
+data_2mer <- read_csv("H99_all_genes_promoter_500nt_2mer_counts.csv",skip = 10)
+data_2mer <- as.data.frame(data_2mer)
+rownames(data_2mer) <- data_2mer$Gene
+data_2mer01 <- as.data.frame(scale(data_2mer[, -1])) 
+data_2mer01 <- cbind("Gene" = data_2mer$Gene,data_2mer01)
+
+merged_initial_expression <- read.csv("merged_initial_expression.csv")
+merged_initial_expression <- as.data.frame(merged_initial_expression)
+
+merged_data_2mer <- merge(merged_initial_expression, data_2mer01, by = "Gene")
+write.csv(merged_data_2mer,"merged_data_2mer.csv",row.names = FALSE)
+
+# Filtering significant motifs
+# Building a linear mixed-effects model
+response_2mer <- merged_data_2mer$Expression
+predictors_2mer <- merged_data_2mer[, c("initial_value",colnames(data_2mer)[-1])] 
+# Remove genes from the list
+
+# Select appropriate K-mer data using LASSO regression
+# Prepare data for LASSO analysis
+library(glmnet)
+X <- as.matrix(merged_data_2mer[, c("initial_value",colnames(data_2mer)[-1])])
+y <- merged_data_2mer$Expression
+
+```
+
+```{r}
+###If LASSO is used without any preprocessing
+# the correlation matrix is calculated.
+cor_matrix <- cor(X)
+
+library(caret)
+# Highly relevant features found (correlation > 0.9)
+high_cor_features <- findCorrelation(cor_matrix, cutoff = 0.6)
+
+# Remove highly relevant features
+X_filtered <- X[, -high_cor_features]
+
+library(dplyr)
+# Remove the reverse complementary sequence
+# Function: Generate the reverse complementary sequence
+reverse_complement <- function(sequence) {
+  complement <- chartr("ACGT", "TGCA", sequence)
+  return(paste(rev(strsplit(complement, NULL)[[1]]), collapse = ""))
+}
+
+# Function: Filter K-mers that do not have a reverse complementary sequence
+filter_reverse_complements <- function(kmer_df) {
+  # Check if there is a column called ‘kmer’
+  if (!"kmer" %in% colnames(kmer_df)) {
+    stop("There is no column named ‘kmer’ in the data frame")
+  }
+  
+  unique_kmers <- c()
+  seen_kmers <- c()
+  
+  for (kmer in kmer_df$kmer) {
+    rev_comp <- reverse_complement(kmer)
+    if (!(kmer %in% seen_kmers) && !(rev_comp %in% seen_kmers)) {
+      unique_kmers <- c(unique_kmers, kmer)
+      seen_kmers <- c(seen_kmers, kmer, rev_comp)
+    }
+  }
+  
+  # Return to the filtered data frame
+  return(kmer_df %>% filter(kmer %in% unique_kmers))
+}
+
+filtered_2mer <- data.frame(kmer = colnames(X_filtered)[-1])
+filtered_2mer01 <- filter_reverse_complements(filtered_2mer)
+
+```
+
+```{r}
+# Perform PCA
+pca <- prcomp(X_filtered[,filtered_2mer01$kmer], scale. = TRUE)
+
+
+# Load necessary libraries
+library(ggplot2)
+
+# Extract variance proportion
+pca_var <- pca$sdev^2
+pca_var_ratio <- pca_var / sum(pca_var)
+
+# Create data frame
+pca_var_df <- data.frame(PC = 1:length(pca_var_ratio), Variance = pca_var_ratio)
+
+# Draw a line graph
+ggplot(pca_var_df, aes(x = PC, y = Variance)) +
+  geom_line(color = "blue") +
+  geom_point(color = "blue") +
+  labs(title = "PCA Variance Explained", x = "Principal Component", y = "Variance Explained") +
+  theme_minimal()
+
+# Select the first few main ingredients
+num_components <- 4  # Select the first 4 main ingredients
+X_pca <- cbind(X_filtered[,1],pca$x[, 1:num_components])
+X_pca <- data.frame(X_pca)
+colnames(X_pca)[1] <- "Initial_value"
+write.csv(X_pca,"X_pca_2mer.csv",row.names = FALSE)
+
+# Use cross-validation to select the optimal alpha and lambda values
+# Define the sequence of alpha values
+alpha_values <- seq(0, 1, by = 0.01)
+
+# Initialise the list of stored cross-validation results
+cv_results <- list()
+X_pca <- as.matrix(X_pca)
+
+# Cross-validation for each alpha value
+for (alpha_val in alpha_values) {
+  cv_model <- cv.glmnet(X_pca, y, nfolds = 10, alpha = alpha_val)
+  cv_results[[as.character(alpha_val)]] <- cv_model
+}
+
+# Extract the optimal alpha and corresponding lambda values
+best_alpha <- NULL
+best_lambda <- NULL
+best_mse <- Inf
+
+for (alpha_val in alpha_values) {
+  cv_model <- cv_results[[as.character(alpha_val)]]
+  min_mse <- min(cv_model$cvm)
+  
+  if (min_mse < best_mse) {
+    best_mse <- min_mse
+    best_alpha <- alpha_val
+    best_lambda <- cv_model$lambda.min
+  }
+}
+lasso_result_2mer <- data.frame(name=c("alpha","lambda","mse"),value=c(best_alpha,best_lambda,best_mse))
+write.csv(lasso_result_2mer,"lasso_result_2mer.csv",row.names = FALSE)
+# Re-fit the model with the optimal alpha and lambda values
+lasso_result_2mer <- read.csv("lasso_result_2mer.csv")
+elastic_net_model <- glmnet(X_pca, y, alpha = best_alpha, lambda = best_lambda)
+
+# Output model coefficients
+coef(elastic_net_model)
+
+# Print the best alpha and lambda values
+print(paste("Best alpha:", best_alpha))
+print(paste("Best lambda:", best_lambda))
+
+# Visualisation of the results
+plot(cv_results[[as.character(best_alpha)]])
+
+
+```
+
+We can determine the optimal value of λ such that the model achieves the smallest mean square error at the optimal value of α. In this way, we can find the optimal parameter configuration that both simplifies the model and guarantees the accuracy of the prediction.
+
+```{r}
+
+library(knitr)
+library(xtable)
+
+
+# PCA
+pca <- prcomp(X_filtered[, filtered_2mer01$kmer], scale. = TRUE)
+
+# Extract PCA load matrix
+loadings <- pca$rotation
+
+loadings_table <- xtable(loadings, caption = "PCA loading matrix")
+print(loadings_table, type = "html")
+```
+
+# 3-mer
+
+```{r}
+library(readr)
+data_3mer <- read_csv("H99_all_genes_promoter_500nt_3mer_counts.csv",skip = 10)
+data_3mer <- as.data.frame(data_3mer)
+rownames(data_3mer) <- data_3mer$Gene
+data_3mer01 <- as.data.frame(scale(data_3mer[, -1])) 
+data_3mer01 <- cbind("Gene" = data_3mer$Gene,data_3mer01)
+
+merged_initial_expression <- read.csv("merged_initial_expression.csv")
+merged_initial_expression <- as.data.frame(merged_initial_expression)
+
+merged_data_3mer <- merge(merged_initial_expression, data_3mer01, by = "Gene")
+write.csv(merged_data_3mer,"merged_data_3mer.csv",row.names = FALSE)
+
+# Filtering significant motifs
+# Building a linear mixed-effects model
+response_3mer <- merged_data_3mer$Expression
+predictors_3mer <- merged_data_3mer[, c("initial_value",colnames(data_3mer)[-1])]  
+
+# Select suitable K-mer data using LASSO regression
+# Prepare data for LASSO analysis
+library(glmnet)
+X <- as.matrix(merged_data_3mer[, c("initial_value",colnames(data_3mer)[-1])])
+y <- merged_data_3mer$Expression
+
+
+
+```
+
+```{r}
+###If LASSO is used without any preprocessing
+
+# the correlation matrix is calculated.
+cor_matrix <- cor(X)
+
+library(caret)
+# # Highly relevant features found (correlation > 0.9)
+high_cor_features <- findCorrelation(cor_matrix, cutoff = 0.6)
+
+# Remove highly relevant features
+X_filtered <- X[, -high_cor_features]
+
+library(dplyr)
+# Remove the reverse complementary sequence
+# Function: Generate the reverse complementary sequence
+reverse_complement <- function(sequence) {
+  complement <- chartr("ACGT", "TGCA", sequence)
+  return(paste(rev(strsplit(complement, NULL)[[1]]), collapse = ""))
+}
+
+# Function: Filter K-mers that do not have a reverse complementary sequence
+filter_reverse_complements <- function(kmer_df) {
+  # Check if there is a column called ‘kmer’
+  if (!"kmer" %in% colnames(kmer_df)) {
+    stop("There is no column named ‘kmer’ in the data frame")
+  }
+  
+  unique_kmers <- c()
+  seen_kmers <- c()
+  
+  for (kmer in kmer_df$kmer) {
+    rev_comp <- reverse_complement(kmer)
+    if (!(kmer %in% seen_kmers) && !(rev_comp %in% seen_kmers)) {
+      unique_kmers <- c(unique_kmers, kmer)
+      seen_kmers <- c(seen_kmers, kmer, rev_comp)
+    }
+  }
+  
+  # Return to the filtered data frame
+  return(kmer_df %>% filter(kmer %in% unique_kmers))
+}
+
+filtered_3mer <- data.frame(kmer = colnames(X_filtered)[-1])
+filtered_3mer01 <- filter_reverse_complements(filtered_3mer)
+
+```
+
+```{r}
+# PCA
+pca <- prcomp(X_filtered[,filtered_3mer01$kmer], scale. = TRUE)
+
+
+library(ggplot2)
+
+# Extract variance proportion
+pca_var <- pca$sdev^2
+pca_var_ratio <- pca_var / sum(pca_var)
+
+
+pca_var_df <- data.frame(PC = 1:length(pca_var_ratio), Variance = pca_var_ratio)
+
+# Draw a line graph
+ggplot(pca_var_df, aes(x = PC, y = Variance)) +
+  geom_line(color = "blue") +
+  geom_point(color = "blue") +
+  labs(title = "PCA Variance Explained", x = "Principal Component", y = "Variance Explained") +
+  theme_minimal()
+
+# Select the first few main ingredients
+num_components <- 4  # Select the first 4 main ingredients
+X_pca <- cbind(X_filtered[,1],pca$x[, 1:num_components])
+X_pca <- data.frame(X_pca)
+colnames(X_pca)[1] <- "Initial_value"
+write.csv(X_pca,"X_pca_3mer.csv",row.names = FALSE)
+
+# Use cross-validation to select the optimal alpha and lambda values
+# Define the sequence of alpha values
+alpha_values <- seq(0, 1, by = 0.01)
+
+# Initialise the list of stored cross-validation results
+cv_results <- list()
+X_pca <- as.matrix(X_pca)
+
+# Cross-validation for each alpha value
+for (alpha_val in alpha_values) {
+  cv_model <- cv.glmnet(X_pca, y, nfolds = 10, alpha = alpha_val)
+  cv_results[[as.character(alpha_val)]] <- cv_model
+}
+
+# Extract the optimal alpha and corresponding lambda values
+best_alpha <- NULL
+best_lambda <- NULL
+best_mse <- Inf
+
+for (alpha_val in alpha_values) {
+  cv_model <- cv_results[[as.character(alpha_val)]]
+  min_mse <- min(cv_model$cvm)
+  
+  if (min_mse < best_mse) {
+    best_mse <- min_mse
+    best_alpha <- alpha_val
+    best_lambda <- cv_model$lambda.min
+  }
+}
+lasso_result_3mer <- data.frame(name=c("alpha","lambda","mse"),value=c(best_alpha,best_lambda,best_mse))
+write.csv(lasso_result_3mer,"lasso_result_3mer.csv",row.names = FALSE)
+# Re-fit the model with the optimal alpha and lambda values
+elastic_net_model <- glmnet(X_pca, y, alpha = best_alpha, lambda = best_lambda)
+
+# Output model coefficients
+coef(elastic_net_model)
+
+# Print the best alpha and lambda values
+print(paste("Best alpha:", best_alpha))
+print(paste("Best lambda:", best_lambda))
+
+# Visualisation of the results
+plot(cv_results[[as.character(best_alpha)]])
+
+
+```
+
+```{r}
+
+library(knitr)
+library(xtable)
+
+
+# PCA
+pca <- prcomp(X_filtered[,filtered_3mer01$kmer], scale. = TRUE)
+
+# Extract PCA loading matrix
+loadings <- pca$rotation
+
+loadings_table <- xtable(loadings, caption = "PCA Loading Matrix")
+print(loadings_table, type = "html")
+```
+
+# 4-mer
+
+```{r}
+library(readr)
+data_4mer <- read_csv("H99_all_genes_promoter_500nt_4mer_counts.csv",skip=10)
+data_4mer <- as.data.frame(data_4mer)
+rownames(data_4mer) <- data_4mer$Gene
+data_4mer01 <- as.data.frame(scale(data_4mer[, -1])) 
+data_4mer01 <- cbind("Gene" = data_4mer$Gene,data_4mer01)
+
+merged_initial_expression <- read.csv("merged_initial_expression.csv")
+merged_initial_expression <- as.data.frame(merged_initial_expression)
+
+merged_data_4mer <- merge(merged_initial_expression, data_4mer01, by = "Gene")
+write.csv(merged_data_4mer,"merged_data_4mer.csv",row.names = FALSE)
+
+# Filtering significant motifs
+# Building a linear mixed-effects model
+response_4mer <- merged_data_4mer$Expression
+predictors_4mer <- merged_data_4mer[, c("initial_value",colnames(data_4mer)[-1])]  
+
+
+# Select suitable K-mer data using LASSO regression
+# Prepare data for LASSO analysis
+library(glmnet)
+X <- as.matrix(merged_data_4mer[, c("initial_value",colnames(data_4mer)[-1])])
+y <- merged_data_4mer$Expression
+
+```
+
+```{r}
+###If LASSO is performed without any preprocessing
+# calculate the correlation matrix
+cor_matrix <- cor(X)
+
+library(caret)
+# Highly relevant features found (correlation > 0.9)
+high_cor_features <- findCorrelation(cor_matrix, cutoff = 0.6)
+
+# Remove highly relevant features
+X_filtered <- X[, -high_cor_features]
+
+library(dplyr)
+# Remove the reverse complementary sequence
+# Function: Generate the reverse complementary sequence
+reverse_complement <- function(sequence) {
+  complement <- chartr("ACGT", "TGCA", sequence)
+  return(paste(rev(strsplit(complement, NULL)[[1]]), collapse = ""))
+}
+
+# Function: Filter K-mers that do not have a reverse complementary sequence
+filter_reverse_complements <- function(kmer_df) {
+  # Check for the existence of a column named ‘kmer’
+  if (!"kmer" %in% colnames(kmer_df)) {
+    stop("There is no column named ‘kmer’ in the data frame")
+  }
+  
+  unique_kmers <- c()
+  seen_kmers <- c()
+  
+  for (kmer in kmer_df$kmer) {
+    rev_comp <- reverse_complement(kmer)
+    if (!(kmer %in% seen_kmers) && !(rev_comp %in% seen_kmers)) {
+      unique_kmers <- c(unique_kmers, kmer)
+      seen_kmers <- c(seen_kmers, kmer, rev_comp)
+    }
+  }
+  
+  # Return to the filtered data frame
+  return(kmer_df %>% filter(kmer %in% unique_kmers))
+}
+
+filtered_4mer <- data.frame(kmer = colnames(X_filtered)[-1])
+filtered_4mer01 <- filter_reverse_complements(filtered_4mer)
+
+
+```
+
+```{r}
+# PCA
+pca <- prcomp(X_filtered[,filtered_4mer01$kmer], scale. = TRUE)
+
+
+library(ggplot2)
+
+# Extract variance proportion
+pca_var <- pca$sdev^2
+pca_var_ratio <- pca_var / sum(pca_var)
+
+
+pca_var_df <- data.frame(PC = 1:length(pca_var_ratio), Variance = pca_var_ratio)
+
+# Draw a line graph
+ggplot(pca_var_df, aes(x = PC, y = Variance)) +
+  geom_line(color = "blue") +
+  geom_point(color = "blue") +
+  labs(title = "PCA Variance Explained", x = "Principal Component", y = "Variance Explained") +
+  theme_minimal()
+
+
+
+# Select the first few main components
+# sum(pca_var_df$Variance[1:29])
+# [1] 0.4925558
+# The coefficients are too small. According to the results of the plot, they are very dispersed and need to be further screened
+# First, perform LASSO regression and further screen according to the results of LASSO regression
+X_pca <- cbind(X_filtered[,1],pca$x)
+X_pca <- data.frame(X_pca)
+colnames(X_pca)[1] <- "Initial_value"
+write.csv(X_pca,"X_pca_4mer.csv",row.names = FALSE)
+
+# Use cross-validation to select the optimal alpha and lambda values
+# Define the sequence of alpha values
+alpha_values <- seq(0, 1, by = 0.01)
+
+# Initialise the list of stored cross-validation results
+cv_results <- list()
+X_pca <- as.matrix(X_pca)
+
+# Cross-validation for each alpha value
+for (alpha_val in alpha_values) {
+  cv_model <- cv.glmnet(X_pca, y, nfolds = 10, alpha = alpha_val)
+  cv_results[[as.character(alpha_val)]] <- cv_model
+}
+
+# Extract the optimal alpha and corresponding lambda values
+best_alpha <- NULL
+best_lambda <- NULL
+best_mse <- Inf
+
+for (alpha_val in alpha_values) {
+  cv_model <- cv_results[[as.character(alpha_val)]]
+  min_mse <- min(cv_model$cvm)
+  
+  if (min_mse < best_mse) {
+    best_mse <- min_mse
+    best_alpha <- alpha_val
+    best_lambda <- cv_model$lambda.min
+  }
+}
+lasso_result_4mer <- data.frame(name=c("alpha","lambda","mse"),value=c(best_alpha,best_lambda,best_mse))
+write.csv(lasso_result_4mer,"lasso_result_4mer.csv",row.names = FALSE)
+# Re-fit the model with the optimal alpha and lambda values
+elastic_net_model <- glmnet(X_pca, y, alpha = best_alpha, lambda = best_lambda)
+
+# Output model coefficients
+coef(elastic_net_model)
+```
+
+```{r}
+
+# Extract LASSO regression coefficients
+lasso_coefs <- coef(elastic_net_model)
+
+# Convert the coefficients to a data frame and remove the intercept term
+lasso_coefs_df <- as.data.frame(as.matrix(lasso_coefs))
+lasso_coefs_df <- lasso_coefs_df[c(-1,-2), , drop = FALSE] 
+
+# Sort by absolute value of the coefficient from largest to smallest
+lasso_coefs_df$abs_coef <- abs(lasso_coefs_df[, 1])
+lasso_coefs_df <- lasso_coefs_df[order(-lasso_coefs_df$abs_coef), , drop = FALSE]
+
+# Cumulative explained variance
+explained_variance <- cumsum(lasso_coefs_df$abs_coef / sum(lasso_coefs_df$abs_coef))
+
+# Plot the degree of explanation of the variance of the population by each independent variable
+plot(explained_variance, type = "b", pch = 19, col = "blue",
+     xlab = "Number of Features", ylab = "Cumulative Explained Variance",
+     main = "Explained Variance by LASSO Features")
+
+# Add a dotted auxiliary line with y=0.8
+abline(h = 0.8, col = "red", lty = 2)
+abline(h = 0.6, col = "red", lty = 2)
+
+explained_variance_dataframe <- data.frame(explained_variance)
+rownames(explained_variance_dataframe) <- rownames(lasso_coefs_df)
+
+# Set threshold (e.g. keep features that explain 80% of the variance)
+threshold_index <- which(explained_variance >= 0.8)[1]
+significant_features_4_mer <- rownames(lasso_coefs_df)[1:threshold_index]
+significant_features_4_mer <- data.frame(significant_features_4_mer)
+write.csv(significant_features_4_mer,"significant_features_4_mer.csv",row.names = FALSE)
+
+X_pca_significant_4mer <- X_pca[,c('Initial_value',significant_features_4_mer$significant_features_4_mer)]
+write.csv(X_pca_significant_4mer,"X_pca_significant_4mer.csv",row.names = FALSE)
+```
+
+# 5-mer
+
+```{r}
+library(readr)
+data_5mer <- read_csv("H99_all_genes_promoter_500nt_5mer_counts.csv")
+data_5mer <- as.data.frame(data_5mer)
+rownames(data_5mer) <- data_5mer$Gene
+data_5mer01 <- as.data.frame(scale(data_5mer[, -1])) 
+data_5mer01 <- cbind("Gene" = data_5mer$Gene,data_5mer01)
+
+merged_initial_expression <- read.csv("merged_initial_expression.csv")
+merged_initial_expression <- as.data.frame(merged_initial_expression)
+
+merged_data_5mer <- merge(merged_initial_expression, data_5mer01, by = "Gene")
+write.csv(merged_data_5mer,"merged_data_5mer.csv",row.names = FALSE)
+
+# Filtering significant motifs
+# Building a linear mixed-effects model
+response_5mer <- merged_data_5mer$Expression
+predictors_5mer <- merged_data_5mer[, c("initial_value",colnames(data_5mer)[-1])]  
+
+# Select suitable K-mer data using LASSO regression
+# Prepare data for LASSO analysis
+library(glmnet)
+X <- as.matrix(merged_data_5mer[, c("initial_value",colnames(data_5mer)[-1])])
+merged_data_5mer <- read.csv("merged_data_5mer.csv")
+merged_data_5mer <- data.frame(merged_data_5mer)
+y <- merged_data_5mer$Expression
+
+
+```
+
+```{r}
+###If LASSO is performed without any preprocessing
+# calculate the correlation matrix
+cor_matrix <- cor(X)
+
+library(caret)
+# Find highly relevant features (correlation > 0.9)
+high_cor_features <- findCorrelation(cor_matrix, cutoff = 0.6)
+
+# Remove highly relevant features
+X_filtered <- X[, -high_cor_features]
+
+library(dplyr)
+# Remove the reverse complementary sequence
+# Function: Generate the reverse complementary sequence
+reverse_complement <- function(sequence) {
+  complement <- chartr("ACGT", "TGCA", sequence)
+  return(paste(rev(strsplit(complement, NULL)[[1]]), collapse = ""))
+}
+
+# Function: Filter K-mers that do not have a reverse complementary sequence
+filter_reverse_complements <- function(kmer_df) {
+  # Check if there is a column called ‘kmer’
+  if (!"kmer" %in% colnames(kmer_df)) {
+    stop("There is no column named ‘kmer’ in the data frame")
+  }
+  
+  unique_kmers <- c()
+  seen_kmers <- c()
+  
+  for (kmer in kmer_df$kmer) {
+    rev_comp <- reverse_complement(kmer)
+    if (!(kmer %in% seen_kmers) && !(rev_comp %in% seen_kmers)) {
+      unique_kmers <- c(unique_kmers, kmer)
+      seen_kmers <- c(seen_kmers, kmer, rev_comp)
+    }
+  }
+  
+  # Return to the filtered data frame
+  return(kmer_df %>% filter(kmer %in% unique_kmers))
+}
+
+filtered_5mer <- data.frame(kmer = colnames(X_filtered)[-1])
+filtered_5mer01 <- filter_reverse_complements(filtered_5mer)
+
+
+```
+
+```{r}
+#PCA
+pca <- prcomp(X_filtered[,filtered_5mer01$kmer], scale. = TRUE)
+
+
+library(ggplot2)
+
+# Extract variance proportion
+pca_var <- pca$sdev^2
+pca_var_ratio <- pca_var / sum(pca_var)
+
+
+pca_var_df <- data.frame(PC = 1:length(pca_var_ratio), Variance = pca_var_ratio)
+
+# Draw a line graph
+ggplot(pca_var_df, aes(x = PC, y = Variance)) +
+  geom_line(color = "blue") +
+  geom_point(color = "blue") +
+  labs(title = "PCA Variance Explained", x = "Principal Component", y = "Variance Explained") +
+  theme_minimal()
+
+
+
+# Select the first few main ingredients
+X_pca <- cbind(X_filtered[,1],pca$x)
+X_pca <- data.frame(X_pca)
+colnames(X_pca)[1] <- "Initial_value"
+write.csv(X_pca,"X_pca_5mer.csv",row.names = FALSE)
+
+X_pca <- read.csv("X_pca_5mer.csv")
+X_pca <- data.frame(X_pca)
+
+# Use cross-validation to select the optimal alpha and lambda values
+# Define the sequence of alpha values
+alpha_values <- seq(0, 1, by = 0.01)
+
+# Initialise the list of stored cross-validation results
+cv_results <- list()
+X_pca <- as.matrix(X_pca)
+
+# Define the result storage list
+min_mse <- Inf
+best_alpha <- NULL
+best_lambda <- NULL
+
+# Define the result storage list
+for (alpha_val in alpha_values) {
+  print(paste("Fitting model for alpha:", alpha_val))
+  cv_model <- cv.glmnet(X_pca, y, nfolds = 10, alpha = alpha_val)
+  cv_results[[as.character(alpha_val)]] <- cv_model
+  
+  # Extract the optimal lambda value and MSE
+  min_mse_alpha <- min(cv_model$cvm)
+  if (min_mse_alpha < min_mse) {
+    min_mse <- min_mse_alpha
+    best_alpha <- alpha_val
+    best_lambda <- cv_model$lambda.min
+  }
+}
+
+lasso_result_5mer <- data.frame(name=c("alpha","lambda","mse"),value=c(best_alpha,best_lambda,best_mse))
+write.csv(lasso_result_5mer,"lasso_result_5mer.csv",row.names = FALSE)
+# Re-fit the model with the optimal alpha and lambda values
+elastic_net_model <- glmnet(X_pca, y, alpha = best_alpha, lambda = best_lambda)
+
+# Output model coefficients
+coef(elastic_net_model)
+
+```
+
+```{r}
+# Extract LASSO regression coefficients
+lasso_coefs <- coef(elastic_net_model)
+
+# Convert the coefficients to a data frame and remove the intercept term
+lasso_coefs_df <- as.data.frame(as.matrix(lasso_coefs))
+lasso_coefs_df <- lasso_coefs_df[c(-1,-2), , drop = FALSE]  
+
+# Sort by absolute value of the coefficient from largest to smallest
+lasso_coefs_df$abs_coef <- abs(lasso_coefs_df[, 1])
+lasso_coefs_df <- lasso_coefs_df[order(-lasso_coefs_df$abs_coef), , drop = FALSE]
+
+# Cumulative explained variance
+explained_variance <- cumsum(lasso_coefs_df$abs_coef / sum(lasso_coefs_df$abs_coef))
+
+# Plot the degree of explanation of the variance of the population by each independent variable
+plot(explained_variance, type = "b", pch = 19, col = "blue",
+     xlab = "Number of Features", ylab = "Cumulative Explained Variance",
+     main = "Explained Variance by LASSO Features")
+
+
+abline(h = 0.8, col = "red", lty = 2)
+abline(h = 0.6, col = "red", lty = 2)
+
+explained_variance_dataframe <- data.frame(explained_variance)
+rownames(explained_variance_dataframe) <- rownames(lasso_coefs_df)
+
+# Set threshold (e.g. keep features that explain 80% of the variance)
+threshold_index <- which(explained_variance >= 0.8)[1]
+significant_features_5_mer <- rownames(lasso_coefs_df)[1:threshold_index]
+significant_features_5_mer <- data.frame(significant_features_5_mer)
+write.csv(significant_features_5_mer,"significant_features_5_mer.csv",row.names = FALSE)
+
+X_pca_significant_5mer <- X_pca[,c('Initial_value',significant_features_5_mer$significant_features_5_mer)]
+write.csv(X_pca_significant_5mer,"X_pca_significant_5mer.csv",row.names = FALSE)
+
+ 
+```
+
+```{r}
+
+# Print the best alpha and lambda values
+print(paste("Best alpha:", best_alpha))
+print(paste("Best lambda:", best_lambda))
+
+# Visualisation of the results
+plot(cv_results[[as.character(best_alpha)]])
+```
